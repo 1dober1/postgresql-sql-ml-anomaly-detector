@@ -8,12 +8,12 @@ import psycopg
 import requests
 from datetime import datetime, timezone
 from scipy.stats import ks_2samp 
-from dotenv import load_dotenv  # <--- [1] ДОБАВИЛИ ЭТО
+from dotenv import load_dotenv  
 
 # --- [2] ЗАГРУЖАЕМ ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.abspath(os.path.join(BASE_DIR, '..')))
-load_dotenv(os.path.join(BASE_DIR, '..', '.env')) # Читаем .env из корня
+load_dotenv(os.path.join(BASE_DIR, '..', '.env')) 
 
 STATE_FILE = os.path.join(BASE_DIR, "drift_state.json")
 
@@ -61,94 +61,53 @@ def send_telegram_msg(text):
 
 def process_alerts(anomalies_df):
     if anomalies_df.empty:
+        print("DEBUG: DataFrame аномалий пуст.")
         return
 
-    print(f"--- Отправка алертов ({len(anomalies_df)} шт) ---")
+    print(f"--- ОБРАБОТКА АЛЕРТОВ ({len(anomalies_df)} шт) ---")
     
-    # [CONFIG] Порог чувствительности
-    # Чем меньше число, тем "аномальнее" запрос. 
-    # -0.20 (реальная атака) < -0.05 (порог) < -0.01 (шум админки)
-    SCORE_THRESHOLD = -0.05 
-    
-    # [CONFIG] Игнорируемые пользователи (например, 'postgres' или 'monitoring_user')
-    IGNORED_USERS = [] # Можно добавить OID пользователей, если знаешь их
+
+    SCORE_THRESHOLD = 0.0 
     
     with psycopg.connect(**DB_CONFIG) as conn:
         with conn.cursor() as cur:
             for _, row in anomalies_df.iterrows():
                 qid = row['queryid']
-                dbid = row['dbid']
-                userid = row['userid']
-                win_end = row['window_end']
                 score = row['anomaly_score']
+                
+                print(f"DEBUG: Проверка QueryID {qid}, Score {score:.4f}...")
 
-                # 1. ФИЛЬТР ПО ПОРОГУ (Threshold)
+                # 1. Проверка порога
                 if score > SCORE_THRESHOLD:
-                    print(f"Skipping alert: Score {score:.4f} is above threshold {SCORE_THRESHOLD}")
-                    continue
-
-                # 2. ФИЛЬТР ПО ПОЛЬЗОВАТЕЛЮ (Whitelist)
-                if userid in IGNORED_USERS:
-                    print(f"Skipping alert: UserID {userid} is ignored")
+                    print(f"   -> ПРОПУСК: Score {score:.4f} выше порога {SCORE_THRESHOLD}")
                     continue
                 
-                # 3. Достаем текст запроса (ИСПРАВЛЕНИЕ ОШИБКИ)
-                # Берем из нашей таблицы лексики, так как там он точно есть и нормализован
+                # 2. Получение текста (упрощенно для теста)
                 try:
-                    cur.execute(
-                        """
-                        SELECT query_text 
-                        FROM monitoring.query_lex_features 
-                        WHERE queryid = %s AND dbid = %s AND userid = %s
-                        LIMIT 1
-                        """, 
-                        (qid, dbid, userid)
-                    )
+                    cur.execute("SELECT query_text FROM monitoring.query_lex_features WHERE queryid = %s", (qid,))
                     res = cur.fetchone()
-                    # Если вдруг нет в лексике (новая), пробуем из снапшотов
                     if not res:
-                        cur.execute(
-                            """
-                            SELECT query_text 
-                            FROM monitoring.pgss_snapshots_raw 
-                            WHERE queryid = %s AND dbid = %s AND userid = %s
-                            ORDER BY snapshot_ts DESC LIMIT 1
-                            """,
-                            (qid, dbid, userid)
-                        )
-                        res = cur.fetchone()
-                        
-                    query_text = res[0] if res else "TEXT NOT FOUND IN MONITORING DB"
-                except Exception as e:
-                    query_text = f"Error fetching query: {e}"
-                
-                # 4. ФИЛЬТР ПО ТЕКСТУ (Системные запросы)
-                if "monitoring." in query_text.lower():
-                    # print(f"Skipping system query: {qid}")
-                    continue
-                
-                # Фильтр DBeaver / IDE служебных запросов (обычно они запрашивают схемы)
-                if any(x in query_text.lower() for x in ['pg_catalog', 'information_schema', 'pg_class', 'pg_attribute']):
-                     # Можно раскомментировать, если хочешь жестко давить запросы к метаданным
-                     # print(f"Skipping metadata query: {qid}")
-                     # continue
-                     pass
+                         cur.execute("SELECT query_text FROM monitoring.pgss_snapshots_raw WHERE queryid = %s ORDER BY snapshot_ts DESC LIMIT 1", (qid,))
+                         res = cur.fetchone()
+                    query_text = res[0] if res else "TEXT NOT FOUND"
+                except:
+                    query_text = "ERROR FETCHING TEXT"
 
-                if query_text.strip().upper() in ['COMMIT', 'ROLLBACK', 'BEGIN']:
+                # 3. Фильтр мониторинга
+                if "monitoring." in str(query_text).lower():
+                    print("   -> ПРОПУСК: Системный запрос мониторинга")
                     continue
 
+                # 4. ОТПРАВКА
+                print(f"   -> ОТПРАВКА В TELEGRAM! (Score: {score:.4f})")
+                
                 safe_query = str(query_text).replace("<", "&lt;").replace(">", "&gt;")
-
                 msg = (
                     f"🚨 <b>ANOMALY DETECTED</b> 🚨\n\n"
                     f"<b>Score:</b> {score:.4f}\n"
-                    f"<b>Time:</b> {win_end}\n"
-                    f"<b>User:</b> {userid} | <b>DB:</b> {dbid}\n"
-                    f"<b>QueryID:</b> <code>{qid}</code>\n\n"
-                    f"<b>SQL Query:</b>\n"
-                    f"<code>{safe_query[:500]}</code>" 
+                    f"<b>QueryID:</b> <code>{qid}</code>\n"
+                    f"<b>SQL:</b> <code>{safe_query[:200]}</code>" 
                 )
-                
                 send_telegram_msg(msg)
 
 def get_drift_counter():

@@ -1,12 +1,10 @@
 try:
     from db_config import DB_CONFIG
 except Exception:
-    # Allow running as `python -m scripts.train_model` or `python scripts/train_model.py`
     from scripts.db_config import DB_CONFIG
 import numpy as np
 import pickle
 import os
-from datetime import datetime
 from sklearn.ensemble import IsolationForest
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import FunctionTransformer
@@ -16,18 +14,26 @@ import pandas as pd
 MODEL_FILENAME = "model_baseline_v1.pkl"
 MODEL_VERSION = "baseline_v1"
 
-
+# --- [ВАЖНО] КОНФИГУРАЦИЯ ПРИЗНАКОВ ---
+# LOG_FEATURES: Признаки, которые имеют огромный разброс, но НЕ являются главными маркерами твоей атаки.
+# Их мы логарифмируем, чтобы сгладить выбросы.
 LOG_FEATURES = [
-    'shared_read_per_call', 'temp_read_per_call', 'ms_per_row'
+    'shared_read_per_call', 
+    'temp_read_per_call', 
+    'ms_per_row'
 ]
 
-# Сюда переносим главные индикаторы тяжести, чтобы они шли "как есть" (RAW)
+# OTHER_NUM_FEATURES: Признаки, которые мы оставляем "КАК ЕСТЬ" (Passthrough).
+# Сюда перенесены главные индикаторы тяжести (rows, wal_bytes, time), 
+# чтобы модель видела реальный масштаб катастрофы.
 OTHER_NUM_FEATURES = [
-    'calls_per_sec', 'cache_miss_ratio',
-    'temp_share', 'read_blks_per_row',
-    'exec_time_per_call_ms', # <--- Перенесли сюда
-    'rows_per_call',         # <--- Перенесли сюда
-    'wal_bytes_per_call'     # <--- Перенесли сюда
+    'calls_per_sec', 
+    'cache_miss_ratio', 
+    'temp_share', 
+    'read_blks_per_row',
+    'exec_time_per_call_ms', # <--- ВАЖНО: Без логарифма
+    'rows_per_call',         # <--- ВАЖНО: Без логарифма
+    'wal_bytes_per_call'     # <--- ВАЖНО: Без логарифма
 ]
 
 LEX_FEATURES = [
@@ -38,43 +44,33 @@ LEX_FEATURES = [
 
 ALL_FEATURES = LOG_FEATURES + OTHER_NUM_FEATURES + LEX_FEATURES
 
-
 def get_training_data():
-    """Загружаем данные за последние 7 дней"""
     conn_str = f"postgresql+psycopg://{DB_CONFIG['user']}:{DB_CONFIG['password']}@{DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['dbname']}"
-
+    # Берем данные только за последние 24 часа, чтобы не цеплять старый мусор
     query = """
     SELECT * FROM monitoring.features_with_lex
-    WHERE window_start >= now() - interval '7 days';
+    WHERE window_start >= now() - interval '1 day';
     """
-
     try:
-        # pandas сам откроет и закроет соединение
         df = pd.read_sql(query, conn_str)
-        print(f"Загружено строк: {len(df)}")
+        print(f"Загружено строк для обучения: {len(df)}")
         return df
     except Exception as e:
         print(f"Ошибка загрузки данных: {e}")
         return pd.DataFrame()
 
-
 def train():
+    print("--- [1] Загрузка данных ---")
     df = get_training_data()
 
     if df.empty:
-        print("Нет данных для обучения. Завершение.")
+        print("❌ Нет данных для обучения.")
         return
 
     print("--- [2] Препроцессинг ---")
-    # 1. Заполняем пропуски
-    # Если нет лексики -> считаем 0 (простой запрос)
     df[LEX_FEATURES] = df[LEX_FEATURES].fillna(0)
-    # Если метрики NULL -> 0
-    df[LOG_FEATURES + OTHER_NUM_FEATURES] = df[LOG_FEATURES +
-                                               OTHER_NUM_FEATURES].fillna(0)
+    df[LOG_FEATURES + OTHER_NUM_FEATURES] = df[LOG_FEATURES + OTHER_NUM_FEATURES].fillna(0)
 
-    # 2. Собираем Pipeline
-    # ColumnTransformer применит log1p только к нужным колонкам, остальные пропустит
     preprocessor = ColumnTransformer(
         transformers=[
             ('log', FunctionTransformer(np.log1p), LOG_FEATURES),
@@ -82,15 +78,13 @@ def train():
         ]
     )
 
-    # 3. Модель
-    # n_estimators=100: количество деревьев (стандарт)
-    # contamination=0.01: ожидаем ~1% аномалий. Можно настроить 'auto', если не уверены.
-    # n_jobs=-1: используем все ядра процессора
+    # Увеличиваем n_estimators для надежности
+    # Contamination ставим авто или очень низкий, так как мы обучаемся на ЧИСТЫХ данных
     model_pipeline = Pipeline([
         ('preprocessor', preprocessor),
         ('iso_forest', IsolationForest(
-            n_estimators=100,
-            contamination=0.01,
+            n_estimators=200,    # Больше деревьев = стабильнее скор
+            contamination=0.05, # Мы предполагаем, что в обучающей выборке почти нет грязи
             random_state=42,
             n_jobs=-1
         ))
@@ -101,14 +95,10 @@ def train():
     model_pipeline.fit(X)
 
     print("--- [4] Сохранение модели ---")
-    # Сохраняем объект pipeline целиком (вместе с препроцессингом!)
-    # Это важно, чтобы при детекции новые данные проходили те же трансформации.
     with open(MODEL_FILENAME, 'wb') as f:
         pickle.dump(model_pipeline, f)
 
-    print(f"Модель сохранена в файл: {os.path.abspath(MODEL_FILENAME)}")
-    print(f"Версия модели: {MODEL_VERSION}")
-
+    print(f"✅ Модель сохранена: {os.path.abspath(MODEL_FILENAME)}")
 
 if __name__ == "__main__":
     train()
