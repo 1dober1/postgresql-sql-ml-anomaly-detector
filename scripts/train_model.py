@@ -16,14 +16,18 @@ import pandas as pd
 MODEL_FILENAME = "model_baseline_v1.pkl"
 MODEL_VERSION = "baseline_v1"
 
+
 LOG_FEATURES = [
-    'exec_time_per_call_ms', 'rows_per_call',
-    'shared_read_per_call', 'temp_read_per_call',
-    'wal_bytes_per_call', 'ms_per_row'
+    'shared_read_per_call', 'temp_read_per_call', 'ms_per_row'
 ]
+
+# Сюда переносим главные индикаторы тяжести, чтобы они шли "как есть" (RAW)
 OTHER_NUM_FEATURES = [
     'calls_per_sec', 'cache_miss_ratio',
-    'temp_share', 'read_blks_per_row'
+    'temp_share', 'read_blks_per_row',
+    'exec_time_per_call_ms', # <--- Перенесли сюда
+    'rows_per_call',         # <--- Перенесли сюда
+    'wal_bytes_per_call'     # <--- Перенесли сюда
 ]
 
 LEX_FEATURES = [
