@@ -25,7 +25,7 @@ from detector_alerts import (
 )
 from detector_drift import update_streak
 
-MODEL_FILENAME = "model_baseline_v1.pkl"
+MODEL_FILENAME = os.getenv("MODEL_FILE", "model_baseline_v1.pkl")
 MODEL_VERSION = os.getenv("MODEL_VERSION", "baseline_v1")
 
 BATCH_LIMIT = int(os.getenv("DETECT_BATCH_LIMIT", "2000"))
@@ -63,18 +63,24 @@ def run_once():
         if not rows:
             return
 
-        df = pd.DataFrame(rows)
-        df = coerce_features_df(df)
+        df_all = pd.DataFrame(rows)
+        df_all = coerce_features_df(df_all)
+
+        new_last_window_end = df_all["window_end"].max()
+
+        mask = df_all["query_text"].notna() & ~df_all["query_text"].apply(is_system_query)
+        df = df_all[mask].copy()
+
+        if df.empty:
+            save_state(conn, new_last_window_end, bad_runs_streak)
+            return
 
         X = df[ALL_FEATURES].copy()
         preds = model.predict(X)
         scores = model.decision_function(X)
 
-        ##### Будет корректно работать?
-        df["is_anomaly"] = preds == -1
+        df["is_anomaly"] = (preds == -1)
         df["anomaly_score"] = scores
-
-        new_last_window_end = df["window_end"].max()
 
         df_anom = df[df["is_anomaly"]].copy()
         now_ts = datetime.now(timezone.utc)
@@ -82,7 +88,7 @@ def run_once():
         insert_rows = []
         for _, r in df_anom.iterrows():
             features = build_features_json(r)
-            insert_rows.append(
+            insert_rows.append((
                 r["window_start"],
                 r["window_end"],
                 r["dbid"],
@@ -91,8 +97,8 @@ def run_once():
                 MODEL_VERSION,
                 float(r["anomaly_score"]),
                 dumps_json(features),
-                now_ts,
-            )
+                now_ts
+            ))
         insert_anomaly_rows(conn, insert_rows)
 
         real_alerts_sent = 0

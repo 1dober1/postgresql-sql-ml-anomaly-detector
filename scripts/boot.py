@@ -187,7 +187,9 @@ CREATE TABLE IF NOT EXISTS monitoring.anomaly_scores (
 CREATE INDEX IF NOT EXISTS idx_anomaly_scores_ts
     ON monitoring.anomaly_scores (window_end DESC);
 
-CREATE OR REPLACE VIEW monitoring.features_with_lex AS
+DROP VIEW IF EXISTS monitoring.features_with_lex;
+
+CREATE VIEW monitoring.features_with_lex AS
 SELECT
     w.*,
     l.query_text,

@@ -30,7 +30,7 @@ WHERE id = 1;
 FETCH_WINDOWS = """
 SELECT *
 FROM monitoring.features_with_lex
-WHERE (%s IS NULL) OR (window_end > %s)
+WHERE window_end > COALESCE(%s::timestamptz, '-infinity'::timestamptz)
 ORDER BY window_end ASC
 LIMIT %s;
 """
@@ -78,7 +78,7 @@ def save_state(conn, last_window_end, bad_runs_streak):
 
 def fetch_new_windows(conn, last_window_end, limit: int):
     with conn.cursor() as cur:
-        cur.execute(FETCH_WINDOWS, (last_window_end, last_window_end, limit))
+        cur.execute(FETCH_WINDOWS, (last_window_end, limit))
         rows = cur.fetchall()
         return rows
 

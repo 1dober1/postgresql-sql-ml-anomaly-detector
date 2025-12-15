@@ -9,7 +9,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.impute import SimpleImputer
 from dotenv import load_dotenv
 
-from scripts.detector_features import ALL_FEATURES
+from detector_features import ALL_FEATURES
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.abspath(os.path.join(BASE_DIR, "..")))
@@ -20,7 +20,7 @@ try:
 except ImportError:
     from db_config import DB_CONFIG
 
-MODEL_FILENAME = "model_baseline_v1.pkl"
+MODEL_FILENAME = os.getenv("MODEL_FILE", "model_baseline_v1.pkl")
 
 
 def load_data():
@@ -65,7 +65,7 @@ def train():
             (
                 "iso_forest",
                 IsolationForest(
-                    n_estimators=200, contamination=0.01, random_state=42, n_jobs=-1
+                    n_estimators=200, contamination=0.05, random_state=42, n_jobs=-1
                 ),
             ),
         ]

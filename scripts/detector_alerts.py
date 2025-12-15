@@ -13,6 +13,12 @@ SYSTEM_KEYWORDS = [
     "begin",
     "commit",
     "rollback",
+    "from pg_type",
+    "from pg_attribute",
+    "from pg_class",
+    "from pg_namespace",
+    "to_regtype(",
+    "::regtype",
 ]
 
 
