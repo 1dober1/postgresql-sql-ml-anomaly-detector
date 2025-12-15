@@ -36,16 +36,7 @@ def wait_for_db():
     print("❌ Не удалось подключиться к БД.")
     sys.exit(1)
 
-def init_db_extensions():
-    """Создает расширение pg_stat_statements и таблицы"""
-    print("🛠 Настройка расширений и таблиц...")
-    try:
-        with psycopg.connect(**DB_CONFIG, autocommit=True) as conn:
-            conn.execute("CREATE EXTENSION IF NOT EXISTS pg_stat_statements;")
-            # Здесь можно добавить создание таблиц monitoring, если их нет
-            # Но предполагаем, что run_pipeline.sh (collector.py) создаст их сам
-    except Exception as e:
-        print(f"⚠️ Ошибка инициализации (возможно уже есть): {e}")
+
 
 def run_training_cycle():
     """Очистка -> pgbench -> Сбор -> Обучение"""
@@ -92,35 +83,112 @@ def run_training_cycle():
     subprocess.run([sys.executable, TRAIN_SCRIPT], check=True)
     print("🎉 Модель готова!")
 
+def init_db_structure():
+    """Создает расширения и обновляет структуру таблиц"""
+    print("🛠 Настройка структуры БД (Extensions & Tables)...")
+    try:
+        with psycopg.connect(**DB_CONFIG, autocommit=True) as conn:
+            conn.execute("CREATE EXTENSION IF NOT EXISTS pg_stat_statements;")
+            
+            # Базовая таблица
+            conn.execute("""
+            CREATE TABLE IF NOT EXISTS monitoring.anomaly_scores (
+                window_start timestamptz,
+                window_end timestamptz,
+                dbid oid,
+                userid oid,
+                queryid bigint,
+                model_version text,
+                anomaly_score float,
+                is_anomaly boolean,
+                reason jsonb,
+                scored_at timestamptz,
+                -- Физические метрики
+                exec_time_ms float,
+                rows_cnt float,
+                disk_read float,
+                wal_bytes float,
+                -- Лексические метрики (НОВОЕ)
+                num_joins int,
+                is_write boolean,
+                is_ddl boolean,
+                
+                PRIMARY KEY (model_version, window_end, dbid, userid, queryid)
+            );
+            """)
+
+            # МИГРАЦИЯ: Добавляем колонки, если их нет
+            alter_cmds = [
+                "ADD COLUMN IF NOT EXISTS exec_time_ms FLOAT",
+                "ADD COLUMN IF NOT EXISTS rows_cnt FLOAT",
+                "ADD COLUMN IF NOT EXISTS disk_read FLOAT",
+                "ADD COLUMN IF NOT EXISTS wal_bytes FLOAT",
+                # НОВЫЕ КОЛОНКИ:
+                "ADD COLUMN IF NOT EXISTS num_joins INT",
+                "ADD COLUMN IF NOT EXISTS is_write BOOLEAN",
+                "ADD COLUMN IF NOT EXISTS is_ddl BOOLEAN"
+            ]
+            for cmd in alter_cmds:
+                try:
+                    conn.execute(f"ALTER TABLE monitoring.anomaly_scores {cmd}")
+                except Exception:
+                    pass 
+
+            print("✅ Структура таблиц обновлена.")
+            
+    except Exception as e:
+        print(f"⚠️ Ошибка инициализации БД: {e}")
+    
 def main_loop():
     """Бесконечный цикл работы"""
     print("\n🛡 СИСТЕМА ЗАПУЩЕНА В БОЕВОМ РЕЖИМЕ")
     print("   Сбор данных: каждые 15 сек")
-    print("   Детекция: каждые 75 сек (накопление)")
+    print("   Детекция: каждые 75 сек")
+    print("   Переобучение: каждые 24 часа")
+    
+    # Настройки таймеров
+    COLLECT_INTERVAL = 15
+    DETECT_CYCLES = 5  # Запуск детектора каждые 5 сборов (5 * 15 = 75 сек)
+    RETRAIN_INTERVAL = 24 * 60 * 60  # 24 часа в секундах
     
     step = 0
+    last_retrain_time = time.time()
+
     while True:
         # 1. Сбор данных
-        # print(f"[{step}] Pipeline snapshot...")
         subprocess.run([PIPELINE_SCRIPT], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        
         step += 1
         
-        # 2. Детекция запускается реже (например, раз в 5 циклов сбора = 75 сек)
-        if step % 5 == 0:
+        # 2. Детекция (раз в 75 сек)
+        if step % DETECT_CYCLES == 0:
             print(f"🕵️ Запуск детектора (Step {step})...")
             subprocess.run([sys.executable, DETECT_SCRIPT])
             
-        time.sleep(15)
+        # 3. Плановое переобучение (раз в сутки)
+        if time.time() - last_retrain_time > RETRAIN_INTERVAL:
+            print(f"⏰ ПЛАНОВОЕ ПЕРЕОБУЧЕНИЕ (Прошло 24 часа)...")
+            try:
+                subprocess.run([sys.executable, TRAIN_SCRIPT], check=True)
+                last_retrain_time = time.time()
+                print("✅ Модель обновлена по расписанию.")
+                
+                # Опционально: Сброс счетчика дрейфа, так как модель новая
+                if os.path.exists("drift_state.json"):
+                    os.remove("drift_state.json")
+                    
+            except Exception as e:
+                print(f"❌ Ошибка планового переобучения: {e}")
+
+        time.sleep(COLLECT_INTERVAL)
 
 if __name__ == "__main__":
     wait_for_db()
-    init_db_extensions()
+
+    init_db_structure()
     
-    # Проверка: если модели нет -> запускаем обучение на pgbench
     if not os.path.exists(MODEL_FILE):
         run_training_cycle()
     else:
-        print(f"✅ Модель найдена: {MODEL_FILE}. Пропускаем обучение.")
+        print(f"✅ Модель найдена: {MODEL_FILE}")
         
     main_loop()
