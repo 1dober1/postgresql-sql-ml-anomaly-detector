@@ -1,5 +1,48 @@
+# Virtual environments
 venv/
+.venv/
+
+# Python bytecode
 __pycache__/
+*.py[cod]
+*$py.class
+
+# Environment variables
 .env
+.env.*
+
+# Serialized models / artifacts
 *.pkl
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Testing / coverage
+.pytest_cache/
+.tox/
+.coverage
+.coverage.*
+
+# Mypy, caches
+.mypy_cache/
+.cache/
+
+# Distribution / build
+build/
+dist/
+*.egg-info/
+
+# Logs
+*.log
+pip-log.txt
+
+# OS files
 .DS_Store
+
+# IDEs
+.vscode/
+.idea/
+
+# SQLite databases
+*.sqlite3
+*.db
