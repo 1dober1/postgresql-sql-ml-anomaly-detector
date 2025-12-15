@@ -11,8 +11,8 @@ services:
     volumes:
       - ./scripts:/app/scripts
       - ./run_pipeline.sh:/app/run_pipeline.sh
-      - ./model_baseline_v1.pkl:/app/model_baseline_v1.pkl
-      - ./drift_state.json:/app/drift_state.json
+      # - ./model_baseline_v1.pkl:/app/model_baseline_v1.pkl
+      # - ./drift_state.json:/app/drift_state.json
     environment:
       # Важно: теперь мы стучимся в localhost, так как сеть общая
       - DB_HOST=localhost
