@@ -1,8 +1,10 @@
 import os
+from typing import Any, Dict, Iterable
+
 import requests
 
 
-SYSTEM_KEYWORDS = [
+SYSTEM_SUBSTRINGS = [
     "pg_catalog",
     "information_schema",
     "pg_toast",
@@ -10,35 +12,51 @@ SYSTEM_KEYWORDS = [
     "monitoring.",
     "set application_name",
     "show transaction isolation level",
-    "begin",
-    "commit",
-    "rollback",
-    "from pg_type",
-    "from pg_attribute",
-    "from pg_class",
-    "from pg_namespace",
-    "to_regtype(",
-    "::regtype",
 ]
 
+TX_EXACT = {"begin", "commit", "end", "rollback"}
 
-def is_system_query(text: str) -> bool:
+SYS_SELECT_PREFIXES = (
+    "select current_schema",
+    "select current_database",
+    "select current_user",
+    "select session_user",
+    "select user",
+    "select version",
+    "select pg_backend_pid",
+)
+
+
+def is_system_query(text: Any) -> bool:
     if not isinstance(text, str):
-        return False
-    t = text.lower().strip()
-    if len(t) < 10 and ("set" in t or "show" in t):
         return True
-    return any(kw in t for kw in SYSTEM_KEYWORDS)
+
+    t = text.strip().lower().rstrip(";")
+    if not t:
+        return True
+
+    if t in TX_EXACT:
+        return True
+
+    if t.startswith(("set ", "show ", "reset ")):
+        return True
+
+    if t.startswith(SYS_SELECT_PREFIXES):
+        return True
+
+    return any(s in t for s in SYSTEM_SUBSTRINGS)
 
 
-def send_telegram(text: str):
+def send_telegram(text: str) -> None:
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
     if not token or not chat_id:
         return
+
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     if len(text) > 4000:
         text = text[:4000] + "..."
+
     try:
         requests.post(
             url,
@@ -49,7 +67,7 @@ def send_telegram(text: str):
         pass
 
 
-def fetch_usernames_batch(conn, userids):
+def fetch_usernames_batch(conn, userids: Iterable[int]) -> Dict[int, str]:
     if not userids:
         return {}
     with conn.cursor() as cur:
@@ -61,9 +79,7 @@ def fetch_usernames_batch(conn, userids):
     return {r["oid"]: r["rolname"] for r in rows}
 
 
-def build_alert_message(
-    username: str, score: float, query_text: str, metrics: dict
-) -> str:
+def build_alert_message(username: str, score: float, query_text: str, metrics: Dict[str, float]) -> str:
     sql_safe = (str(query_text)[:200]).replace("<", "&lt;")
     parts = []
     if metrics.get("exec_time_per_call_ms", 0) > 0:

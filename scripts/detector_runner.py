@@ -39,14 +39,32 @@ ALERT_METRICS = [
     "wal_bytes_per_call",
 ]
 
+SIGNIF_EXEC_MS = float(os.getenv("DRIFT_SIGNIF_EXEC_MS", "20"))
+SIGNIF_ROWS = float(os.getenv("DRIFT_SIGNIF_ROWS", "50000"))
+SIGNIF_SHARED_READ = float(os.getenv("DRIFT_SIGNIF_SHARED_READ", "200"))
+SIGNIF_WAL_BYTES = float(os.getenv("DRIFT_SIGNIF_WAL_BYTES", "200000"))
+
+def _is_significant(metrics) -> bool:
+    return (
+        metrics.get("exec_time_per_call_ms", 0.0) >= SIGNIF_EXEC_MS
+        or metrics.get("rows_per_call", 0.0) >= SIGNIF_ROWS
+        or metrics.get("shared_read_per_call", 0.0) >= SIGNIF_SHARED_READ
+        or metrics.get("wal_bytes_per_call", 0.0) >= SIGNIF_WAL_BYTES
+    )
 
 def load_model_or_train():
     if os.path.exists(MODEL_FILENAME):
         with open(MODEL_FILENAME, "rb") as f:
             return pickle.load(f)
+
     from train_model import train as train_emergency
 
     train_emergency()
+    if not os.path.exists(MODEL_FILENAME):
+        raise FileNotFoundError(
+            f"Model training finished, but file '{MODEL_FILENAME}' was not created. "
+            "Check train_model.py MODEL_FILENAME/env handling."
+        )
     with open(MODEL_FILENAME, "rb") as f:
         return pickle.load(f)
 
@@ -65,11 +83,14 @@ def run_once():
 
         df_all = pd.DataFrame(rows)
         df_all = coerce_features_df(df_all)
-
         new_last_window_end = df_all["window_end"].max()
 
-        mask = df_all["query_text"].notna() & ~df_all["query_text"].apply(is_system_query)
-        df = df_all[mask].copy()
+        qt = df_all.get("query_text")
+        if qt is None:
+            df = df_all.iloc[0:0].copy()
+        else:
+            mask = qt.notna() & ~qt.apply(is_system_query)
+            df = df_all[mask].copy()
 
         if df.empty:
             save_state(conn, new_last_window_end, bad_runs_streak)
@@ -88,20 +109,23 @@ def run_once():
         insert_rows = []
         for _, r in df_anom.iterrows():
             features = build_features_json(r)
-            insert_rows.append((
-                r["window_start"],
-                r["window_end"],
-                r["dbid"],
-                r["userid"],
-                r["queryid"],
-                MODEL_VERSION,
-                float(r["anomaly_score"]),
-                dumps_json(features),
-                now_ts
-            ))
+            insert_rows.append(
+                (
+                    r["window_start"],
+                    r["window_end"],
+                    r["dbid"],
+                    r["userid"],
+                    r["queryid"],
+                    MODEL_VERSION,
+                    float(r["anomaly_score"]),
+                    dumps_json(features),
+                    now_ts,
+                )
+            )
         insert_anomaly_rows(conn, insert_rows)
 
         real_alerts_sent = 0
+        significant_alerts_sent = 0
         if not df_anom.empty:
             user_map = fetch_usernames_batch(conn, set(df_anom["userid"].tolist()))
 
@@ -121,15 +145,20 @@ def run_once():
                 send_telegram(msg)
                 real_alerts_sent += 1
 
+                if _is_significant(metrics):
+                    significant_alerts_sent += 1
+
         bad_runs_streak, drift = update_streak(
             bad_runs_streak=bad_runs_streak,
-            real_alerts_sent=real_alerts_sent,
+            real_alerts_sent=significant_alerts_sent,
             consecutive_limit=CONSECUTIVE_RUNS_LIMIT,
         )
 
         if drift:
             send_telegram(
-                f"🛑 <b>DRIFT DETECTED</b>\n{bad_runs_streak} runs подряд с алертами.\n🔄 Retraining..."
+                f"🛑 <b>DRIFT DETECTED</b>\n"
+                f"{bad_runs_streak} runs подряд с существенными алертами.\n"
+                "🔄 Retraining..."
             )
             from train_model import train as retrain
 
