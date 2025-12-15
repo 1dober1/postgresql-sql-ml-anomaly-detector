@@ -7,132 +7,73 @@ import json
 import psycopg
 import requests
 from datetime import datetime, timezone
-from scipy.stats import ks_2samp 
-from dotenv import load_dotenv  
+from dotenv import load_dotenv
 
-# --- [2] ЗАГРУЖАЕМ ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ---
+# --- НАСТРОЙКИ ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.abspath(os.path.join(BASE_DIR, '..')))
-load_dotenv(os.path.join(BASE_DIR, '..', '.env')) 
+load_dotenv(os.path.join(BASE_DIR, '..', '.env'))
 
+# Файл, чтобы помнить счетчик между запусками
 STATE_FILE = os.path.join(BASE_DIR, "drift_state.json")
+CONSECUTIVE_RUNS_LIMIT = 5  # Сколько "плохих" запусков подряд нужно для переобучения
 
 try:
     from scripts.db_config import DB_CONFIG
     from scripts.train_model import train as train_model_emergency
 except ImportError:
-    from scripts.db_config import DB_CONFIG
-    from scripts.train_model import train as train_model_emergency
+    # Фолбек для прямого запуска
+    from db_config import DB_CONFIG
+    from train_model import train as train_model_emergency
 
-# --- ТЕЛЕГРАМ КОНФИГ ---
 TG_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TG_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-
-# --- ML КОНФИГ ---
 MODEL_FILENAME = "model_baseline_v1.pkl"
 MODEL_VERSION = "baseline_v1"
-DRIFT_CONSECUTIVE_LIMIT = 5
-KS_P_VALUE_THRESHOLD = 0.01
-MIN_BATCH_SIZE_FOR_DRIFT = 50
 
-DRIFT_MONITOR_FEATURES = ['exec_time_per_call_ms', 'rows_per_call', 'shared_read_per_call', 'wal_bytes_per_call', 'calls_per_sec']
-LOG_FEATURES = ['exec_time_per_call_ms', 'rows_per_call', 'shared_read_per_call', 'temp_read_per_call', 'wal_bytes_per_call', 'ms_per_row']
-OTHER_NUM_FEATURES = ['calls_per_sec', 'cache_miss_ratio', 'temp_share', 'read_blks_per_row']
+# Признаки (должны совпадать с train_model.py)
+LOG_FEATURES = ['shared_read_per_call', 'temp_read_per_call', 'ms_per_row']
+OTHER_NUM_FEATURES = ['calls_per_sec', 'cache_miss_ratio', 'temp_share', 'read_blks_per_row', 'exec_time_per_call_ms', 'rows_per_call', 'wal_bytes_per_call']
 LEX_FEATURES = ['query_len_norm_chars', 'num_tokens', 'num_joins', 'num_where', 'num_group_by', 'num_order_by', 'has_write', 'has_ddl']
 ALL_FEATURES = LOG_FEATURES + OTHER_NUM_FEATURES + LEX_FEATURES
 
+# --- РАБОТА С СОСТОЯНИЕМ (СЧЕТЧИК) ---
+def load_state():
+    if not os.path.exists(STATE_FILE):
+        return {"bad_runs_streak": 0}
+    try:
+        with open(STATE_FILE, 'r') as f:
+            return json.load(f)
+    except:
+        return {"bad_runs_streak": 0}
+
+def save_state(state):
+    with open(STATE_FILE, 'w') as f:
+        json.dump(state, f)
+
+# --- УТИЛИТЫ ---
 def send_telegram_msg(text):
     if not TG_TOKEN or not TG_CHAT_ID:
-        # Пишем в консоль, чтобы ты видел в логах, если токена нет
-        print(f"⚠️ Telegram config missing (Token={bool(TG_TOKEN)}, ID={bool(TG_CHAT_ID)})") 
+        print("⚠️ Telegram config missing") 
         return
-    
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
     try:
-        if len(text) > 4000:
-            text = text[:4000] + "... (truncated)"
-        
-        # Убираем parse_mode="HTML" если есть спецсимволы, которые ломают разметку
-        # Но пока оставим, т.к. красиво.
+        if len(text) > 4000: text = text[:4000] + "..."
         requests.post(url, data={"chat_id": TG_CHAT_ID, "text": text, "parse_mode": "HTML"})
-        print("✅ Telegram alert sent!")
     except Exception as e:
-        print(f"Failed to send Telegram alert: {e}")
-
-def process_alerts(anomalies_df):
-    if anomalies_df.empty:
-        print("DEBUG: DataFrame аномалий пуст.")
-        return
-
-    print(f"--- ОБРАБОТКА АЛЕРТОВ ({len(anomalies_df)} шт) ---")
-    
-
-    SCORE_THRESHOLD = 0.0 
-    
-    with psycopg.connect(**DB_CONFIG) as conn:
-        with conn.cursor() as cur:
-            for _, row in anomalies_df.iterrows():
-                qid = row['queryid']
-                score = row['anomaly_score']
-                
-                print(f"DEBUG: Проверка QueryID {qid}, Score {score:.4f}...")
-
-                # 1. Проверка порога
-                if score > SCORE_THRESHOLD:
-                    print(f"   -> ПРОПУСК: Score {score:.4f} выше порога {SCORE_THRESHOLD}")
-                    continue
-                
-                # 2. Получение текста (упрощенно для теста)
-                try:
-                    cur.execute("SELECT query_text FROM monitoring.query_lex_features WHERE queryid = %s", (qid,))
-                    res = cur.fetchone()
-                    if not res:
-                         cur.execute("SELECT query_text FROM monitoring.pgss_snapshots_raw WHERE queryid = %s ORDER BY snapshot_ts DESC LIMIT 1", (qid,))
-                         res = cur.fetchone()
-                    query_text = res[0] if res else "TEXT NOT FOUND"
-                except:
-                    query_text = "ERROR FETCHING TEXT"
-
-                # 3. Фильтр мониторинга
-                if "monitoring." in str(query_text).lower():
-                    print("   -> ПРОПУСК: Системный запрос мониторинга")
-                    continue
-
-                # 4. ОТПРАВКА
-                print(f"   -> ОТПРАВКА В TELEGRAM! (Score: {score:.4f})")
-                
-                safe_query = str(query_text).replace("<", "&lt;").replace(">", "&gt;")
-                msg = (
-                    f"🚨 <b>ANOMALY DETECTED</b> 🚨\n\n"
-                    f"<b>Score:</b> {score:.4f}\n"
-                    f"<b>QueryID:</b> <code>{qid}</code>\n"
-                    f"<b>SQL:</b> <code>{safe_query[:200]}</code>" 
-                )
-                send_telegram_msg(msg)
-
-def get_drift_counter():
-    if os.path.exists(STATE_FILE):
-        try:
-            with open(STATE_FILE, 'r') as f:
-                data = json.load(f)
-                return data.get('count', 0)
-        except:
-            return 0
-    return 0
-
-def update_drift_counter(count):
-    with open(STATE_FILE, 'w') as f:
-        json.dump({'count': count, 'last_updated': str(datetime.now())}, f)
+        print(f"❌ Failed to send Telegram: {e}")
 
 def load_model():
     path = os.path.abspath(MODEL_FILENAME)
     if not os.path.exists(path):
+        print("⚠️ Модель не найдена! Обучаем новую...")
         train_model_emergency()
     with open(path, 'rb') as f:
         return pickle.load(f)
 
 def get_unscored_data():
     conn_str = f"postgresql+psycopg://{DB_CONFIG['user']}:{DB_CONFIG['password']}@{DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['dbname']}"
+    # Берем ВСЕ новые данные, которые еще не оценены
     query = f"""
     SELECT v.*
     FROM monitoring.features_with_lex v
@@ -142,47 +83,13 @@ def get_unscored_data():
      AND s.dbid = v.dbid AND s.userid = v.userid AND s.queryid = v.queryid
     WHERE s.window_end IS NULL
     ORDER BY v.window_end ASC
-    LIMIT 5000; 
+    LIMIT 2000; 
     """
     try:
         return pd.read_sql(query, conn_str)
     except Exception as e:
-        print(f"Ошибка БД (unscored): {e}")
+        print(f"Ошибка БД: {e}")
         return pd.DataFrame()
-
-def get_reference_data(limit=2000):
-    conn_str = f"postgresql+psycopg://{DB_CONFIG['user']}:{DB_CONFIG['password']}@{DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['dbname']}"
-    query = f"""
-    SELECT v.*
-    FROM monitoring.features_with_lex v
-    JOIN monitoring.anomaly_scores s
-      ON s.model_version = '{MODEL_VERSION}'
-     AND s.window_end = v.window_end
-     AND s.dbid = v.dbid AND s.userid = v.userid AND s.queryid = v.queryid
-    -- WHERE s.is_anomaly = false
-    ORDER BY s.scored_at DESC
-    LIMIT {limit};
-    """
-    try:
-        return pd.read_sql(query, conn_str)
-    except Exception as e:
-        print(f"Ошибка БД (reference): {e}")
-        return pd.DataFrame()
-
-def check_distribution_drift(new_df, ref_df):
-    if ref_df.empty or new_df.empty:
-        return False, []
-    drifted_features = []
-    n_df = new_df.fillna(0)
-    r_df = ref_df.fillna(0)
-    for feature in DRIFT_MONITOR_FEATURES:
-        data_new = n_df[feature]
-        data_ref = r_df[feature]
-        statistic, p_value = ks_2samp(data_ref, data_new)
-        if p_value < KS_P_VALUE_THRESHOLD:
-            drifted_features.append(feature)
-    is_drift = len(drifted_features) >= 2
-    return is_drift, drifted_features
 
 def save_scores(df_results):
     query = """
@@ -200,70 +107,102 @@ def save_scores(df_results):
             MODEL_VERSION, float(row['anomaly_score']), bool(row['is_anomaly']),
             json.dumps(row.get('reason_json', {})), now_ts
         ))
-    try:
-        with psycopg.connect(**DB_CONFIG) as conn:
-            with conn.cursor() as cur:
-                cur.executemany(query, records)
-                conn.commit()
-    except Exception as e:
-        print(f"Ошибка сохранения: {e}")
+    with psycopg.connect(**DB_CONFIG) as conn:
+        with conn.cursor() as cur:
+            cur.executemany(query, records)
+            conn.commit()
 
-def predict_batch(model, df):
-    df_clean = df.copy()
-    df_clean[LEX_FEATURES] = df_clean[LEX_FEATURES].fillna(0)
-    df_clean[LOG_FEATURES + OTHER_NUM_FEATURES] = df_clean[LOG_FEATURES + OTHER_NUM_FEATURES].fillna(0)
-    X = df_clean[ALL_FEATURES]
-    return model.predict(X), model.decision_function(X)
-
-def detect():
-    model_pipeline = load_model()
+def process_alerts(anomalies_df):
+    SCORE_THRESHOLD = 0.0 
+    alerts_sent = 0
     
+    with psycopg.connect(**DB_CONFIG) as conn:
+        with conn.cursor() as cur:
+            for _, row in anomalies_df.iterrows():
+                if row['anomaly_score'] > SCORE_THRESHOLD: continue
+
+                qid = row['queryid']
+                try:
+                    cur.execute("SELECT query_text FROM monitoring.query_lex_features WHERE queryid = %s LIMIT 1", (qid,))
+                    res = cur.fetchone()
+                    query_text = res[0] if res else "TEXT NOT FOUND"
+                except: query_text = "ERR"
+
+                if "monitoring." in str(query_text).lower(): continue
+
+                msg = (
+                    f"🚨 <b>ANOMALY DETECTED</b>\n"
+                    f"<b>Score:</b> {row['anomaly_score']:.3f}\n"
+                    f"SQL: <code>{str(query_text)[:200].replace('<','&lt;')}</code>" 
+                )
+                send_telegram_msg(msg)
+                alerts_sent += 1
+                
+    return alerts_sent
+
+# --- ГЛАВНАЯ ФУНКЦИЯ ---
+def detect():
+    print(f"--- ЗАПУСК ДЕТЕКТОРА ({datetime.now().strftime('%H:%M:%S')}) ---")
+    
+    # 1. Загружаем данные
     new_df = get_unscored_data()
     if new_df.empty:
-        print("Нет новых данных.")
+        print("💤 Нет новых данных для анализа.")
         return
 
-    ref_df = get_reference_data()
-    current_counter = get_drift_counter()
-    drift_detected = False
-    drift_details = []
-    print(f"DEBUG: New rows={len(new_df)}, Ref rows={len(ref_df)}") 
-    if len(new_df) >= MIN_BATCH_SIZE_FOR_DRIFT and not ref_df.empty:
-        drift_detected, drift_details = check_distribution_drift(new_df, ref_df)
-        if drift_detected:
-            print(f"⚠️ ОБНАРУЖЕН ДРЕЙФ! {drift_details}")
-            current_counter += 1
-            update_drift_counter(current_counter)
-            send_telegram_msg(f"⚠️ <b>DRIFT DETECTED</b> ({current_counter}/5)\nFeatures: {', '.join(drift_details)}")
-        else:
-            if current_counter > 0:
-                update_drift_counter(0)
-    else:
-        print(f"DEBUG: Skip Drift Check. Need {MIN_BATCH_SIZE_FOR_DRIFT} rows, ref not empty.")
+    print(f"📊 Обработка {len(new_df)} новых окон...")
     
-    if drift_detected and current_counter >= DRIFT_CONSECUTIVE_LIMIT:
-        print("🛑 ЗАПУСК ПЕРЕОБУЧЕНИЯ...")
-        send_telegram_msg("🛑 <b>RETRAINING MODEL</b> due to stable drift.")
-        try:
-            train_model_emergency()
-            model_pipeline = load_model()
-            update_drift_counter(0)
-        except Exception as e:
-            send_telegram_msg(f"❌ Retraining failed: {e}")
-
-    print("--- Оценка аномалий ---")
-    preds, scores = predict_batch(model_pipeline, new_df)
+    # 2. Предикт
+    model = load_model()
+    df_clean = new_df.copy()
+    df_clean[ALL_FEATURES] = df_clean[ALL_FEATURES].fillna(0)
     
-    new_df['anomaly_score'] = scores
-    new_df['is_anomaly'] = (preds == -1)
+    X = df_clean[ALL_FEATURES]
+    new_df['is_anomaly'] = (model.predict(X) == -1)
+    new_df['anomaly_score'] = model.decision_function(X)
     
+    # 3. Сохраняем оценки в базу
     save_scores(new_df)
-    print(f"Обработано {len(new_df)} окон.")
     
-    # --- [4] ОТПРАВКА ---
-    anomalies_found = new_df[new_df['is_anomaly'] == True]
-    if not anomalies_found.empty:
-        process_alerts(anomalies_found)
+    # 4. Анализ результатов для счетчика
+    anomalies = new_df[new_df['is_anomaly'] == True]
+    
+    state = load_state()
+    current_streak = state.get("bad_runs_streak", 0)
+    
+    if not anomalies.empty:
+        # В этом запуске ЕСТЬ аномалии
+        alerts_count = process_alerts(anomalies)
+        
+        if alerts_count > 0:
+            current_streak += 1
+            print(f"⚠️  В этом запуске найдены аномалии. Streak: {current_streak}/{CONSECUTIVE_RUNS_LIMIT}")
+        else:
+            # Аномалии были системные (monitoring.), счетчик не трогаем или сбрасываем? 
+            # Допустим, если пользовательских алертов нет, то и паники нет.
+            print("ℹ️ Аномалии только системные, счетчик не увеличиваем.")
+            current_streak = 0 # Сброс, так как атаки нет
+    else:
+        # В этом запуске ВСЁ ЧИСТО
+        if current_streak > 0:
+            print("✅ Нагрузка нормализовалась. Сброс счетчика.")
+        current_streak = 0
+
+    # 5. Проверка условия ДРЕЙФА
+    if current_streak >= CONSECUTIVE_RUNS_LIMIT:
+        print(f"🛑 ДРЕЙФ ПОДТВЕРЖДЕН! ({current_streak} запусков подряд с аномалиями)")
+        send_telegram_msg(f"🛑 <b>SYSTEM DRIFT DETECTED</b>\n{current_streak} checks in a row failed.\n🔄 Starting Retraining...")
+        
+        # Переобучение
+        train_model_emergency()
+        
+        # Сброс счетчика после переобучения
+        current_streak = 0
+        send_telegram_msg("✅ Model successfully retrained to new data.")
+
+    # 6. Сохраняем состояние
+    state["bad_runs_streak"] = current_streak
+    save_state(state)
 
 if __name__ == "__main__":
     detect()

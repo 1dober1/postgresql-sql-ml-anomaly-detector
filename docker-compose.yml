@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  ml_service:
+    build: .
+    container_name: anomaly_detector
+    # Используем сетевой режим хоста, чтобы видеть твой Postgres на localhost:5432
+    network_mode: "host" 
+    env_file:
+      - .env
+    volumes:
+      - ./scripts:/app/scripts
+      - ./run_pipeline.sh:/app/run_pipeline.sh
+      - ./model_baseline_v1.pkl:/app/model_baseline_v1.pkl
+      - ./drift_state.json:/app/drift_state.json
+    environment:
+      # Важно: теперь мы стучимся в localhost, так как сеть общая
+      - DB_HOST=localhost
+      - DB_PORT=5432

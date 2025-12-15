@@ -21,6 +21,6 @@ python3 scripts/build_features.py
 # 4. Сбор лексических признаков (Текст запросов)
 python3 scripts/build_lex_features.py
 # 5. Вычисляет аномалии и шлет алерты
-python3 scripts/detect_anomalies.py
+# python3 scripts/detect_anomalies.py
 
 echo "--- Pipeline End: $(date) ---"
