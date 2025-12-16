@@ -5,31 +5,25 @@ import requests
 
 
 SYSTEM_SUBSTRINGS = [
-    "pg_catalog",
-    "information_schema",
-    "pg_toast",
-    "pg_stat_statements",
-    "monitoring.",
-    "vacuum pgbench_",
-    "truncate pgbench_",
-    "set application_name",
-    "show transaction isolation level",
+    "pg_catalog", "information_schema", "pg_toast", "pg_stat_statements",
+    "monitoring.", " monitoring", "pg_type", "pg_roles",
+    "vacuum pgbench_", "truncate pgbench_",
+    "set application_name", "show transaction isolation level",
 ]
 
-TX_EXACT = {"begin", "commit", "end", "rollback"}
+TX_EXACT = {"begin", "commit", "end", "rollback", "savepoint",
+            "release", "create schema if not exists monitoring"
+}
 
 SYS_SELECT_PREFIXES = (
-    "select current_schema",
-    "select current_database",
-    "select current_user",
-    "select session_user",
-    "select user",
-    "select version",
-    "select pg_backend_pid",
+    "select current_schema", "select current_database", "select current_user",
+    "select session_user", "select user", "select version",
+    "select pg_backend_pid", "select $1", "select $2", "select $3",
 )
 
 NOISE_PATTERNS = (
-    "select o.id, o.status, o.created_at, sum(oi.qty*oi.price) as total from biz.orders o join biz.order_items oi",
+    "from biz.orders o join biz.order_items",
+    "sum(oi.qty*oi.price) as total",
     "insert into biz.orders",
     "insert into biz.order_items",
 )
