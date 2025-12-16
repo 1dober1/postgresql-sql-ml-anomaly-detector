@@ -25,6 +25,17 @@ LEX_FEATURES = [
 ALL_FEATURES = LOG_FEATURES + OTHER_NUM_FEATURES + LEX_FEATURES
 META_COLS = ["window_start", "window_end", "dbid", "userid", "queryid"]
 
+MODEL_LOG1P_FEATURES = [
+    "exec_time_per_call_ms",
+    "rows_per_call",
+    "wal_bytes_per_call",
+    "shared_read_per_call",
+    "temp_read_per_call",
+    "ms_per_row",
+    "read_blks_per_row",
+    "calls_per_sec",
+]
+
 
 def _to_number(v):
     if v is None:
@@ -47,6 +58,15 @@ def coerce_features_df(df):
             df[c] = 0
         df[c] = df[c].map(_to_number)
     return df
+
+
+def prepare_model_features_df(df):
+    X = df[ALL_FEATURES].copy()
+    for c in MODEL_LOG1P_FEATURES:
+        if c not in X.columns:
+            continue
+        X[c] = X[c].map(lambda v: math.log1p(v) if v > 0 else 0.0)
+    return X
 
 
 def build_features_json(row) -> dict:

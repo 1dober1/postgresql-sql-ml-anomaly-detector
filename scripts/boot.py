@@ -4,6 +4,12 @@ import sys
 import subprocess
 import psycopg
 
+try:
+    from detector_alerts import send_telegram
+except Exception:
+    def send_telegram(_: str) -> None:  # type: ignore
+        return
+
 
 # Настройка путей
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -30,8 +36,10 @@ RETRAIN_INTERVAL = int(os.getenv("RETRAIN_INTERVAL", str(24 * 60 * 60)))
 
 TRAIN_COLLECT_ITERATIONS = int(os.getenv("TRAIN_COLLECT_ITERATIONS", "40"))
 TRAIN_COLLECT_SLEEP = int(os.getenv("TRAIN_COLLECT_SLEEP", "10"))
+TRAIN_RETRY_LIMIT = int(os.getenv("TRAIN_RETRY_LIMIT", "10"))
 
 MODEL_FILE = os.getenv("MODEL_FILE", "model_baseline_v1.pkl")
+MODEL_VERSION = os.getenv("MODEL_VERSION", "baseline_v1")
 
 DDL_INIT = r"""
 CREATE SCHEMA IF NOT EXISTS monitoring;
@@ -257,26 +265,52 @@ def run_pipeline_once():
 
 
 def run_training_cycle():
-    print("🧪 Первичная подготовка данных для обучения (bootstrap)...")
-    for i in range(TRAIN_COLLECT_ITERATIONS):
-        try:
-            _run(S_COLLECT, check=True)
-            _run(S_DELTAS, check=True)
-            _run(S_FEATURES, check=True)
-            _run(S_LEX, check=True)
-            sys.stdout.write(f"\r   progress {i+1}/{TRAIN_COLLECT_ITERATIONS}\n")
-            sys.stdout.flush()
-        except Exception as e:
-            print(f"\n❌ Ошибка bootstrap-итерации: {e}")
-        time.sleep(TRAIN_COLLECT_SLEEP)
+    attempts = 0
+    while True:
+        attempts += 1
+        print("🧪 Первичная подготовка данных для обучения (bootstrap)...")
+        send_telegram("🧪 Bootstrap: собираю baseline для обучения модели…")
 
-    print("\n🎓 Обучение модели...")
-    _run(S_TRAIN, check=True)
-    print("✅ Модель обучена.")
+        for i in range(TRAIN_COLLECT_ITERATIONS):
+            try:
+                _run(S_COLLECT, check=True)
+                _run(S_DELTAS, check=True)
+                _run(S_FEATURES, check=True)
+                _run(S_LEX, check=True)
+                sys.stdout.write(f"\r   progress {i+1}/{TRAIN_COLLECT_ITERATIONS}\n")
+                sys.stdout.flush()
+            except Exception as e:
+                print(f"\n❌ Ошибка bootstrap-итерации: {e}")
+            time.sleep(TRAIN_COLLECT_SLEEP)
+
+        print("\n🎓 Обучение модели...")
+        send_telegram("🎓 Обучение модели…")
+        try:
+            _run(S_TRAIN, check=True)
+        except Exception as e:
+            send_telegram(
+                f"⚠️ Обучение не удалось (attempt {attempts}/{TRAIN_RETRY_LIMIT}): {e}"
+            )
+            if attempts >= TRAIN_RETRY_LIMIT:
+                raise
+            continue
+
+        if not os.path.exists(MODEL_FILE):
+            send_telegram(
+                f"⚠️ Файл модели {MODEL_FILE} не создан после обучения. Повторяю bootstrap…"
+            )
+            if attempts >= TRAIN_RETRY_LIMIT:
+                raise RuntimeError(f"Model file {MODEL_FILE} was not created.")
+            continue
+
+        print("✅ Модель обучена.")
+        send_telegram(f"✅ Модель обучена: {MODEL_FILE} ({MODEL_VERSION}). Запускаю детекцию…")
+        return
 
 
 def main_loop():
     print("🔁 Запуск основного цикла детекции...")
+    send_telegram(f"🚀 Детектор запущен. Модель: {MODEL_FILE} ({MODEL_VERSION}).")
     last_retrain = time.time()
 
     while True:
@@ -288,11 +322,14 @@ def main_loop():
         if time.time() - last_retrain >= RETRAIN_INTERVAL:
             try:
                 print("🕒 Плановое переобучение модели...")
+                send_telegram("🕒 Плановое переобучение модели…")
                 _run(S_TRAIN, check=True)
                 last_retrain = time.time()
                 print("✅ Плановое переобучение завершено.")
+                send_telegram("✅ Плановое переобучение завершено.")
             except Exception as e:
                 print(f"❌ Ошибка планового переобучения: {e}")
+                send_telegram(f"❌ Ошибка планового переобучения: {e}")
         time.sleep(COLLECT_INTERVAL)
 
 

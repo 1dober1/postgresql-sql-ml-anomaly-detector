@@ -5,8 +5,8 @@ from datetime import datetime, timezone
 import pandas as pd
 
 from detector_features import (
-    ALL_FEATURES,
     coerce_features_df,
+    prepare_model_features_df,
     build_features_json,
     dumps_json,
 )
@@ -30,7 +30,6 @@ MODEL_VERSION = os.getenv("MODEL_VERSION", "baseline_v1")
 
 BATCH_LIMIT = int(os.getenv("DETECT_BATCH_LIMIT", "2000"))
 CONSECUTIVE_RUNS_LIMIT = int(os.getenv("DRIFT_CONSECUTIVE_LIMIT", "5"))
-SCORE_THRESHOLD = float(os.getenv("ALERT_SCORE_THRESHOLD", "0.0"))
 
 ALERT_METRICS = [
     "exec_time_per_call_ms",
@@ -43,6 +42,19 @@ SIGNIF_EXEC_MS = float(os.getenv("DRIFT_SIGNIF_EXEC_MS", "20"))
 SIGNIF_ROWS = float(os.getenv("DRIFT_SIGNIF_ROWS", "50000"))
 SIGNIF_SHARED_READ = float(os.getenv("DRIFT_SIGNIF_SHARED_READ", "200"))
 SIGNIF_WAL_BYTES = float(os.getenv("DRIFT_SIGNIF_WAL_BYTES", "200000"))
+
+
+def _score_threshold_from_env_or_model(model_threshold: float | None) -> float:
+    v = os.getenv("ALERT_SCORE_THRESHOLD")
+    if v is None:
+        return float(model_threshold or 0.0)
+    v = v.strip().lower()
+    if v in ("", "auto", "none"):
+        return float(model_threshold or 0.0)
+    try:
+        return float(v)
+    except Exception:
+        return float(model_threshold or 0.0)
 
 
 def _is_significant(metrics) -> bool:
@@ -72,7 +84,14 @@ def load_model_or_train():
 
 
 def run_once():
-    model = load_model_or_train()
+    model_obj = load_model_or_train()
+    model_threshold = None
+    if isinstance(model_obj, dict) and "pipeline" in model_obj:
+        model_threshold = model_obj.get("threshold")
+        model = model_obj["pipeline"]
+    else:
+        model = model_obj
+    score_threshold = _score_threshold_from_env_or_model(model_threshold)
 
     with connect() as conn:
         state = load_state(conn)
@@ -98,16 +117,13 @@ def run_once():
             save_state(conn, new_last_window_end, bad_runs_streak)
             return
 
-        X = df[ALL_FEATURES].copy()
-        preds = model.predict(X)
+        X = prepare_model_features_df(df)
         scores = model.decision_function(X)
 
-        df["is_anomaly"] = preds == -1
         df["anomaly_score"] = scores
 
-        df_anom = df[
-            (df["is_anomaly"]) & (df["anomaly_score"] <= SCORE_THRESHOLD)
-        ].copy()
+        df["is_anomaly"] = df["anomaly_score"] <= score_threshold
+        df_anom = df[df["is_anomaly"]].copy()
         now_ts = datetime.now(timezone.utc)
 
         insert_rows = []
@@ -135,7 +151,7 @@ def run_once():
 
             for _, r in df_anom.iterrows():
                 score = float(r["anomaly_score"])
-                if score > SCORE_THRESHOLD:
+                if score > score_threshold:
                     continue
 
                 qtext = r.get("query_text")

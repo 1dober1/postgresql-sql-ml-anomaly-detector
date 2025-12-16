@@ -1,31 +1,39 @@
 import os
+import re
 from typing import Any, Dict, Iterable
 
 import requests
 
 
 SYSTEM_SUBSTRINGS = [
-    "pg_catalog", "information_schema", "pg_toast", "pg_stat_statements",
-    "monitoring.", " monitoring", "pg_type", "pg_roles",
-    "vacuum pgbench_", "truncate pgbench_",
-    "set application_name", "show transaction isolation level",
+    "pg_catalog",
+    "information_schema",
+    "pg_toast",
+    "pg_stat_statements",
+    "monitoring.",
+    " monitoring",
+    "pg_type",
+    "pg_roles",
+    "vacuum pgbench_",
+    "truncate pgbench_",
+    "set application_name",
+    "show transaction isolation level",
 ]
 
-TX_EXACT = {"begin", "commit", "end", "rollback", "savepoint",
-            "release", "create schema if not exists monitoring"
-}
+TX_EXACT = {"begin", "commit", "end", "rollback"}
 
 SYS_SELECT_PREFIXES = (
-    "select current_schema", "select current_database", "select current_user",
-    "select session_user", "select user", "select version",
-    "select pg_backend_pid", "select $1", "select $2", "select $3",
+    "select current_schema",
+    "select current_database",
+    "select current_user",
+    "select session_user",
+    "select user",
+    "select version",
+    "select pg_backend_pid",
 )
 
-NOISE_PATTERNS = (
-    "from biz.orders o join biz.order_items",
-    "sum(oi.qty*oi.price) as total",
-    "insert into biz.orders",
-    "insert into biz.order_items",
+_re_select_params_only = re.compile(
+    r"^select\s+(\$\d+\s*(,\s*\$\d+\s*)*)$", re.IGNORECASE
 )
 
 
@@ -40,13 +48,19 @@ def is_system_query(text: Any) -> bool:
     if t in TX_EXACT:
         return True
 
+    if t.startswith(("savepoint ", "release ", "rollback to savepoint ")):
+        return True
+
+    if t.startswith("create schema") and "monitoring" in t:
+        return True
+
     if t.startswith(("set ", "show ", "reset ")):
         return True
 
     if t.startswith(SYS_SELECT_PREFIXES):
         return True
 
-    if any(p in t for p in NOISE_PATTERNS):
+    if _re_select_params_only.match(t):
         return True
 
     return any(s in t for s in SYSTEM_SUBSTRINGS)
