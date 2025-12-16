@@ -120,25 +120,15 @@ def train():
     train_scores = pipeline.decision_function(X)
     auto_threshold = float(np.quantile(train_scores, MODEL_ALERT_QUANTILE))
 
-    score_df = df[["dbid", "userid", "queryid"]].copy()
-    score_df["score"] = train_scores
-    thresholds_by_query = {}
-    for (dbid, userid, queryid), g in score_df.groupby(["dbid", "userid", "queryid"]):
-        thresholds_by_query[(int(dbid), int(userid), int(queryid))] = float(
-            np.quantile(g["score"].to_numpy(), MODEL_ALERT_QUANTILE)
-        )
-
     with open(MODEL_FILENAME, "wb") as f:
         pickle.dump(
             {
                 "pipeline": pipeline,
                 "threshold": auto_threshold,
-                "thresholds_by_query": thresholds_by_query,
                 "trained_at": datetime.now(timezone.utc).isoformat(),
                 "n_rows": int(len(df)),
                 "n_queryids": n_queryids,
                 "alert_quantile": MODEL_ALERT_QUANTILE,
-                "features": list(ALL_FEATURES),
             },
             f,
         )

@@ -12,22 +12,14 @@ OTHER_NUM_FEATURES = [
     "wal_bytes_per_call",
 ]
 LEX_FEATURES = [
-    "query_len_chars",
     "query_len_norm_chars",
     "num_tokens",
     "num_joins",
     "num_where",
     "num_group_by",
     "num_order_by",
-    "num_having",
-    "num_union",
-    "num_subqueries",
-    "num_cte",
     "has_write",
     "has_ddl",
-    "has_tx",
-    "num_case",
-    "num_functions",
 ]
 
 ALL_FEATURES = LOG_FEATURES + OTHER_NUM_FEATURES + LEX_FEATURES

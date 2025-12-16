@@ -30,7 +30,6 @@ MODEL_VERSION = os.getenv("MODEL_VERSION", "baseline_v1")
 
 BATCH_LIMIT = int(os.getenv("DETECT_BATCH_LIMIT", "2000"))
 CONSECUTIVE_RUNS_LIMIT = int(os.getenv("DRIFT_CONSECUTIVE_LIMIT", "5"))
-ALERT_TOP_K = int(os.getenv("ALERT_TOP_K", "5"))
 
 ALERT_METRICS = [
     "exec_time_per_call_ms",
@@ -58,17 +57,13 @@ def _score_threshold_from_env_or_model(model_threshold: float | None) -> float:
         return float(model_threshold or 0.0)
 
 
-def _threshold_override_from_env() -> float | None:
-    v = os.getenv("ALERT_SCORE_THRESHOLD")
-    if v is None:
-        return None
-    v = v.strip().lower()
-    if v in ("", "auto", "none"):
-        return None
-    try:
-        return float(v)
-    except Exception:
-        return None
+def _is_significant(metrics) -> bool:
+    return (
+        metrics.get("exec_time_per_call_ms", 0.0) >= SIGNIF_EXEC_MS
+        or metrics.get("rows_per_call", 0.0) >= SIGNIF_ROWS
+        or metrics.get("shared_read_per_call", 0.0) >= SIGNIF_SHARED_READ
+        or metrics.get("wal_bytes_per_call", 0.0) >= SIGNIF_WAL_BYTES
+    )
 
 
 def load_model_or_train():
@@ -91,24 +86,12 @@ def load_model_or_train():
 def run_once():
     model_obj = load_model_or_train()
     model_threshold = None
-    thresholds_by_query = None
     if isinstance(model_obj, dict) and "pipeline" in model_obj:
         model_threshold = model_obj.get("threshold")
-        thresholds_by_query = model_obj.get("thresholds_by_query")
         model = model_obj["pipeline"]
     else:
         model = model_obj
-    override_threshold = _threshold_override_from_env()
-    global_threshold = float(
-        override_threshold
-        if override_threshold is not None
-        else (model_threshold if model_threshold is not None else 0.0)
-    )
-    use_per_query_thresholds = (
-        override_threshold is None
-        and isinstance(thresholds_by_query, dict)
-        and len(thresholds_by_query) > 0
-    )
+    score_threshold = _score_threshold_from_env_or_model(model_threshold)
 
     with connect() as conn:
         state = load_state(conn)
@@ -139,21 +122,7 @@ def run_once():
 
         df["anomaly_score"] = scores
 
-        if use_per_query_thresholds:
-            df["score_threshold"] = [
-                float(
-                    thresholds_by_query.get(
-                        (int(dbid), int(userid), int(queryid)), global_threshold
-                    )
-                )
-                for dbid, userid, queryid in zip(
-                    df["dbid"], df["userid"], df["queryid"]
-                )
-            ]
-            df["is_anomaly"] = df["anomaly_score"] <= df["score_threshold"]
-        else:
-            df["score_threshold"] = global_threshold
-            df["is_anomaly"] = df["anomaly_score"] <= global_threshold
+        df["is_anomaly"] = df["anomaly_score"] <= score_threshold
         df_anom = df[df["is_anomaly"]].copy()
         now_ts = datetime.now(timezone.utc)
 
@@ -175,28 +144,15 @@ def run_once():
             )
         insert_anomaly_rows(conn, insert_rows)
 
-        significant_alerts_total = 0
-        if not df_anom.empty:
-            significant_alerts_total = int(
-                (
-                    (df_anom["exec_time_per_call_ms"] >= SIGNIF_EXEC_MS)
-                    | (df_anom["rows_per_call"] >= SIGNIF_ROWS)
-                    | (df_anom["shared_read_per_call"] >= SIGNIF_SHARED_READ)
-                    | (df_anom["wal_bytes_per_call"] >= SIGNIF_WAL_BYTES)
-                ).sum()
-            )
-
-        if ALERT_TOP_K > 0 and len(df_anom) > ALERT_TOP_K:
-            df_alert = df_anom.nsmallest(ALERT_TOP_K, "anomaly_score")
-        else:
-            df_alert = df_anom
-
         real_alerts_sent = 0
-        if not df_alert.empty:
-            user_map = fetch_usernames_batch(conn, set(df_alert["userid"].tolist()))
+        significant_alerts_sent = 0
+        if not df_anom.empty:
+            user_map = fetch_usernames_batch(conn, set(df_anom["userid"].tolist()))
 
-            for _, r in df_alert.iterrows():
+            for _, r in df_anom.iterrows():
                 score = float(r["anomaly_score"])
+                if score > score_threshold:
+                    continue
 
                 qtext = r.get("query_text")
                 if is_system_query(qtext):
@@ -209,9 +165,12 @@ def run_once():
                 send_telegram(msg)
                 real_alerts_sent += 1
 
+                if _is_significant(metrics):
+                    significant_alerts_sent += 1
+
         bad_runs_streak, drift = update_streak(
             bad_runs_streak=bad_runs_streak,
-            real_alerts_sent=significant_alerts_total,
+            real_alerts_sent=significant_alerts_sent,
             consecutive_limit=CONSECUTIVE_RUNS_LIMIT,
         )
 
