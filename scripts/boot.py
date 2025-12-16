@@ -264,7 +264,7 @@ def run_training_cycle():
             _run(S_DELTAS, check=True)
             _run(S_FEATURES, check=True)
             _run(S_LEX, check=True)
-            sys.stdout.write(f"\r   progress {i+1}/{TRAIN_COLLECT_ITERATIONS}")
+            sys.stdout.write(f"\r   progress {i+1}/{TRAIN_COLLECT_ITERATIONS}\n")
             sys.stdout.flush()
         except Exception as e:
             print(f"\n❌ Ошибка bootstrap-итерации: {e}")
