@@ -11,11 +11,6 @@ from dotenv import load_dotenv
 
 from detector_features import ALL_FEATURES
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.abspath(os.path.join(BASE_DIR, ".."))
-sys.path.append(PROJECT_ROOT)
-load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
-
 try:
     from scripts.db_config import DB_CONFIG
 except ImportError:
@@ -25,7 +20,16 @@ try:
     from detector_features import ALL_FEATURES
 except Exception:
     from scripts.detector_features import ALL_FEATURES
+    
+try:
+    from detector_features import ALL_FEATURES, coerce_features_df
+except ImportError:
+    from scripts.detector_features import ALL_FEATURES, coerce_features_df
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.abspath(os.path.join(BASE_DIR, ".."))
+sys.path.append(PROJECT_ROOT)
+load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
 
 MODEL_FILENAME = os.getenv("MODEL_FILE", "model_baseline_v1.pkl")
 MODEL_CONTAMINATION = float(os.getenv("MODEL_CONTAMINATION", "0.01"))
@@ -75,9 +79,8 @@ def train():
     if df.empty or len(df) < 50:
         return
 
-    for c in ALL_FEATURES:
-        if c not in df.columns:
-            df[c] = 0
+    df = coerce_features_df(df)  
+    df = df.dropna(subset=ALL_FEATURES)
     X = df[ALL_FEATURES]
 
     pipeline = Pipeline(
