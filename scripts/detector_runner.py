@@ -44,6 +44,7 @@ SIGNIF_ROWS = float(os.getenv("DRIFT_SIGNIF_ROWS", "50000"))
 SIGNIF_SHARED_READ = float(os.getenv("DRIFT_SIGNIF_SHARED_READ", "200"))
 SIGNIF_WAL_BYTES = float(os.getenv("DRIFT_SIGNIF_WAL_BYTES", "200000"))
 
+
 def _is_significant(metrics) -> bool:
     return (
         metrics.get("exec_time_per_call_ms", 0.0) >= SIGNIF_EXEC_MS
@@ -51,6 +52,7 @@ def _is_significant(metrics) -> bool:
         or metrics.get("shared_read_per_call", 0.0) >= SIGNIF_SHARED_READ
         or metrics.get("wal_bytes_per_call", 0.0) >= SIGNIF_WAL_BYTES
     )
+
 
 def load_model_or_train():
     if os.path.exists(MODEL_FILENAME):
@@ -100,10 +102,12 @@ def run_once():
         preds = model.predict(X)
         scores = model.decision_function(X)
 
-        df["is_anomaly"] = (preds == -1)
+        df["is_anomaly"] = preds == -1
         df["anomaly_score"] = scores
 
-        df_anom = df[df["is_anomaly"]].copy()
+        df_anom = df[
+            (df["is_anomaly"]) & (df["anomaly_score"] <= SCORE_THRESHOLD)
+        ].copy()
         now_ts = datetime.now(timezone.utc)
 
         insert_rows = []
