@@ -1,17 +1,20 @@
-version: '3.8'
-
 services:
   ml_service:
     build: .
     container_name: anomaly_detector
-    network_mode: "host"
+    restart: unless-stopped
     env_file:
       - .env
     volumes:
       - ./scripts:/app/scripts
       - ./run_pipeline.sh:/app/run_pipeline.sh
+      - ./artifacts:/app/artifacts
       # - ./model_baseline_v1.pkl:/app/model_baseline_v1.pkl
       # - ./drift_state.json:/app/drift_state.json
-    environment:
-      - DB_HOST=localhost
-      - DB_PORT=5432
+    networks:
+      - anomaly_net
+
+networks:
+  anomaly_net:
+    name: ${ANOMALY_NET:-anomaly-net}
+    external: true

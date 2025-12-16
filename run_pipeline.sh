@@ -1,11 +1,18 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
 # Получаем директорию, где лежит скрипт
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "$DIR"
 
-# Активируем виртуальное окружение
-source venv/bin/activate
+# Активируем виртуальное окружение (если есть)
+if [[ -f ".venv/bin/activate" ]]; then
+  # shellcheck disable=SC1091
+  source ".venv/bin/activate"
+elif [[ -f "venv/bin/activate" ]]; then
+  # shellcheck disable=SC1091
+  source "venv/bin/activate"
+fi
 
 echo "--- Pipeline Start: $(date) ---"
 
