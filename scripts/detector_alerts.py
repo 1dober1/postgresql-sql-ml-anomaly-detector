@@ -10,6 +10,8 @@ SYSTEM_SUBSTRINGS = [
     "pg_toast",
     "pg_stat_statements",
     "monitoring.",
+    "vacuum pgbench_",
+    "truncate pgbench_",
     "set application_name",
     "show transaction isolation level",
 ]
@@ -24,6 +26,12 @@ SYS_SELECT_PREFIXES = (
     "select user",
     "select version",
     "select pg_backend_pid",
+)
+
+NOISE_PATTERNS = (
+    "select o.id, o.status, o.created_at, sum(oi.qty*oi.price) as total from biz.orders o join biz.order_items oi",
+    "insert into biz.orders",
+    "insert into biz.order_items",
 )
 
 
@@ -42,6 +50,9 @@ def is_system_query(text: Any) -> bool:
         return True
 
     if t.startswith(SYS_SELECT_PREFIXES):
+        return True
+
+    if any(p in t for p in NOISE_PATTERNS):
         return True
 
     return any(s in t for s in SYSTEM_SUBSTRINGS)
@@ -79,7 +90,9 @@ def fetch_usernames_batch(conn, userids: Iterable[int]) -> Dict[int, str]:
     return {r["oid"]: r["rolname"] for r in rows}
 
 
-def build_alert_message(username: str, score: float, query_text: str, metrics: Dict[str, float]) -> str:
+def build_alert_message(
+    username: str, score: float, query_text: str, metrics: Dict[str, float]
+) -> str:
     sql_safe = (str(query_text)[:200]).replace("<", "&lt;")
     parts = []
     if metrics.get("exec_time_per_call_ms", 0) > 0:

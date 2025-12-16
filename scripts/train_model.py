@@ -76,7 +76,8 @@ def load_data():
 
 def train():
     df = load_data()
-    if df.empty or len(df) < 50:
+    # На стенде может быть мало окон в начале — обучаемся даже на небольшой выборке
+    if df.empty:
         return
 
     df = coerce_features_df(df)  
