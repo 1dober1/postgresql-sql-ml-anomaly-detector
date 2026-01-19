@@ -1,3 +1,5 @@
+"""Collect pg_stat_statements snapshots into the raw table."""
+
 from datetime import datetime, timezone
 
 import psycopg
@@ -59,11 +61,10 @@ VALUES (
 
 
 def collect_snapshot():
+    """Collect one snapshot and insert rows into pgss_snapshots_raw."""
     with psycopg.connect(**DB_CONFIG, row_factory=psycopg.rows.dict_row) as conn:
         with conn.cursor() as cur:
             try:
-                # cur.execute("SET statement_timeout = '5s';")
-
                 cur.execute(SELECT_PGSS)
                 records = cur.fetchall()
 

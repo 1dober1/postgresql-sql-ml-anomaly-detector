@@ -1,3 +1,5 @@
+"""Train and persist an IsolationForest model for query features."""
+
 import os
 import pickle
 from datetime import datetime, timezone
@@ -48,6 +50,7 @@ MODEL_ALERT_QUANTILE = float(os.getenv("MODEL_ALERT_QUANTILE", "0.002"))
 
 
 def load_data():
+    """Load training data and filter out system queries."""
     conn_str = (
         f"postgresql+psycopg://{DB_CONFIG['user']}:{DB_CONFIG['password']}"
         f"@{DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['dbname']}"
@@ -76,6 +79,7 @@ def load_data():
 
 
 def train():
+    """Train the model pipeline and write it to disk."""
     df = load_data()
     if df.empty:
         raise RuntimeError(

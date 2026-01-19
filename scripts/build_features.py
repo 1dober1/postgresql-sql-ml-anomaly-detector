@@ -1,3 +1,5 @@
+"""Build aggregated features from pgss deltas."""
+
 from datetime import datetime
 
 import psycopg
@@ -10,9 +12,7 @@ except Exception:
 
 
 def load_unprocessed_deltas(cur):
-    """
-    Берём все дельты, для которых ещё нет строк в features_windows.
-    """
+    """Fetch deltas missing rows in monitoring.features_windows."""
     cur.execute(
         """
         SELECT
@@ -42,9 +42,7 @@ def load_unprocessed_deltas(cur):
 
 
 def compute_features(r):
-    """
-    Из одной строки дельт строим набор признаков.
-    """
+    """Build a feature dict from one delta row."""
     window_start = r["window_start"]
     window_end = r["window_end"]
 
@@ -63,14 +61,12 @@ def compute_features(r):
     if calls <= 0:
         return None
 
-    # per-call (стоимость одного вызова)
     exec_time_per_call_ms = total_exec_ms / calls
     rows_per_call = rows / calls
     shared_read_per_call = shared_read / calls
     temp_read_per_call = temp_read / calls
     wal_bytes_per_call = wal_bytes / calls
 
-    # per-second (интенсивность)
     calls_per_sec = calls / window_len_sec
     exec_ms_per_sec = total_exec_ms / window_len_sec
     rows_per_sec = rows / window_len_sec
@@ -78,15 +74,12 @@ def compute_features(r):
     temp_read_per_sec = temp_read / window_len_sec
     wal_bytes_per_sec = wal_bytes / window_len_sec
 
-    # доля temp среди чтений
     denom_reads = shared_read + temp_read
     temp_share = (temp_read / denom_reads) if denom_reads > 0 else None
 
-    # cache miss ratio: сколько чтений ушло на диск
     denom_cache = shared_read + shared_hit
     cache_miss_ratio = (shared_read / denom_cache) if denom_cache > 0 else None
 
-    # эффективность
     ms_per_row = total_exec_ms / max(rows, 1)
     read_blks_per_row = shared_read / max(rows, 1)
 
@@ -119,6 +112,7 @@ def compute_features(r):
 
 
 def save_features(cur, features):
+    """Insert feature rows into monitoring.features_windows."""
     if not features:
         return 0
 
@@ -211,6 +205,7 @@ def save_features(cur, features):
 
 
 def build_features():
+    """Load deltas, compute features, and persist them."""
     with psycopg.connect(**DB_CONFIG, row_factory=dict_row) as conn:
         with conn.cursor() as cur:
             deltas = load_unprocessed_deltas(cur)

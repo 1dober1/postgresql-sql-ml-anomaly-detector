@@ -1,3 +1,5 @@
+"""Feature preparation helpers for the detector model."""
+
 import json
 import math
 
@@ -38,6 +40,7 @@ MODEL_LOG1P_FEATURES = [
 
 
 def _to_number(v):
+    """Convert values to float, normalizing NaN/inf to 0."""
     if v is None:
         return 0.0
     if isinstance(v, bool):
@@ -52,7 +55,10 @@ def _to_number(v):
 
 
 def coerce_features_df(df):
-    """Приводим типы и NaN к нормальному виду (для модели и json-вектора)."""
+    """Normalize types and NaN values for model inputs.
+
+    Also suitable for JSON feature vectors.
+    """
     for c in ALL_FEATURES:
         if c not in df.columns:
             df[c] = 0
@@ -61,6 +67,7 @@ def coerce_features_df(df):
 
 
 def prepare_model_features_df(df):
+    """Prepare feature matrix with log1p for selected columns."""
     X = df[ALL_FEATURES].copy()
     for c in MODEL_LOG1P_FEATURES:
         if c not in X.columns:
@@ -70,9 +77,10 @@ def prepare_model_features_df(df):
 
 
 def build_features_json(row) -> dict:
-    """Приводим типы и NaN к нормальному виду (для модели и json-вектора)."""
+    """Build a feature dict, converting values to numbers."""
     return {c: _to_number(row.get(c)) for c in ALL_FEATURES}
 
 
 def dumps_json(obj) -> str:
+    """Serialize an object to JSON, preserving Unicode."""
     return json.dumps(obj, ensure_ascii=False)

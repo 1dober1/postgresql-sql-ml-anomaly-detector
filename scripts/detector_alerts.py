@@ -1,3 +1,5 @@
+"""Alert helpers for filtering queries and sending Telegram."""
+
 import os
 import re
 from typing import Any, Dict, Iterable
@@ -38,6 +40,7 @@ _re_select_params_only = re.compile(
 
 
 def is_system_query(text: Any) -> bool:
+    """Return True when the query looks empty or internal."""
     if not isinstance(text, str):
         return True
 
@@ -67,6 +70,7 @@ def is_system_query(text: Any) -> bool:
 
 
 def send_telegram(text: str) -> None:
+    """Send a Telegram message if bot credentials are set."""
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
     if not token or not chat_id:
@@ -87,6 +91,7 @@ def send_telegram(text: str) -> None:
 
 
 def fetch_usernames_batch(conn, userids: Iterable[int]) -> Dict[int, str]:
+    """Fetch role names for a batch of user IDs."""
     if not userids:
         return {}
     with conn.cursor() as cur:
@@ -101,6 +106,7 @@ def fetch_usernames_batch(conn, userids: Iterable[int]) -> Dict[int, str]:
 def build_alert_message(
     username: str, score: float, query_text: str, metrics: Dict[str, float]
 ) -> str:
+    """Build a formatted Telegram alert message."""
     sql_safe = (str(query_text)[:200]).replace("<", "&lt;")
     parts = []
     if metrics.get("exec_time_per_call_ms", 0) > 0:

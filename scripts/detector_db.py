@@ -1,3 +1,5 @@
+"""Database helpers for detector state and anomaly storage."""
+
 import psycopg
 from psycopg.rows import dict_row
 
@@ -48,16 +50,19 @@ ON CONFLICT (model_version, window_end, dbid, userid, queryid) DO NOTHING;
 
 
 def connect():
+    """Create a psycopg connection with dict row mapping."""
     return psycopg.connect(**DB_CONFIG, row_factory=dict_row)
 
 
 def ensure_state_row(conn):
+    """Ensure the singleton detector_state row exists."""
     with conn.cursor() as cur:
         cur.execute(STATE_UPSERT_INIT)
     conn.commit()
 
 
 def load_state(conn):
+    """Load detector state, creating defaults if needed."""
     ensure_state_row(conn)
     with conn.cursor() as cur:
         cur.execute(STATE_SELECT)
@@ -71,12 +76,14 @@ def load_state(conn):
 
 
 def save_state(conn, last_window_end, bad_runs_streak):
+    """Persist last_window_end and bad_runs_streak."""
     with conn.cursor() as cur:
         cur.execute(STATE_UPDATE, (last_window_end, bad_runs_streak))
     conn.commit()
 
 
 def fetch_new_windows(conn, last_window_end, limit: int):
+    """Fetch feature windows newer than last_window_end."""
     with conn.cursor() as cur:
         cur.execute(FETCH_WINDOWS, (last_window_end, limit))
         rows = cur.fetchall()
@@ -84,6 +91,7 @@ def fetch_new_windows(conn, last_window_end, limit: int):
 
 
 def insert_anomaly_rows(conn, rows):
+    """Insert anomaly score rows if any."""
     if not rows:
         return
     with conn.cursor() as cur:

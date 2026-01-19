@@ -1,3 +1,5 @@
+"""Compute pgss metric deltas between snapshots."""
+
 from datetime import datetime
 
 import psycopg
@@ -10,9 +12,9 @@ except Exception:
 
 
 def get_last_processed_window_end(cur):
-    """
-    Возвращает последний window_end, который уже есть в pgss_deltas.
-    Если таблица пустая -> None.
+    """Return latest window_end from monitoring.pgss_deltas.
+
+    Return None when the table is empty.
     """
     cur.execute("SELECT max(window_end) AS last_end FROM monitoring.pgss_deltas;")
     row = cur.fetchone()
@@ -20,9 +22,9 @@ def get_last_processed_window_end(cur):
 
 
 def get_snapshot_timestamps(cur, since_ts=None):
-    """
-    Возвращает список DISTINCT snapshot_ts по возрастанию.
-    Если since_ts задан, берём снапшоты >= since_ts (чтобы можно было построить пары).
+    """Return DISTINCT snapshot_ts in ascending order.
+
+    If since_ts is set, only returns snapshots >= since_ts.
     """
     if since_ts is None:
         cur.execute(
@@ -47,9 +49,7 @@ def get_snapshot_timestamps(cur, since_ts=None):
 
 
 def window_already_processed(cur, window_start):
-    """
-    Проверяем, есть ли уже хоть одна строка для окна с данным window_start.
-    """
+    """Check whether rows exist for the given window_start."""
     cur.execute(
         """
         SELECT 1
@@ -63,10 +63,9 @@ def window_already_processed(cur, window_start):
 
 
 def load_snapshot(cur, snapshot_ts):
-    """
-    Загружаем все строки для конкретного snapshot_ts в словарь:
-    key = (dbid, userid, queryid)
-    value = dict с метриками.
+    """Load rows for snapshot_ts into a dict keyed by identifiers.
+
+    Key = (dbid, userid, queryid), value = metrics dict.
     """
     cur.execute(
         """
@@ -97,19 +96,16 @@ def load_snapshot(cur, snapshot_ts):
 
 
 def safe_delta(curr_val, prev_val):
-    """
-    Возвращает (curr - prev) или None, если одно из значений None.
-    """
+    """Return curr - prev, or None if either value is None."""
     if curr_val is None or prev_val is None:
         return None
     return curr_val - prev_val
 
 
 def deltas_for_window(prev_snapshot, curr_snapshot, window_start, window_end):
-    """
-    Считаем дельты для одного окна.
-      - если ключ появился впервые (нет prev), считаем prev = 0 (это нормально для новых queryid).
-      - любые отрицательные дельты считаем некорректными (reset/перезапуск) и пропускаем.
+    """Compute deltas for one window from two snapshots.
+
+    New keys assume prev=0. Negative deltas are skipped.
     """
     deltas = []
 
@@ -194,6 +190,7 @@ def deltas_for_window(prev_snapshot, curr_snapshot, window_start, window_end):
 
 
 def save_deltas(cur, deltas):
+    """Insert computed deltas into monitoring.pgss_deltas."""
     if not deltas:
         return 0
 
@@ -245,9 +242,7 @@ def save_deltas(cur, deltas):
 
 
 def build_deltas_backfill():
-    """
-    Главная функция: догоняет все окна, которые ещё не посчитаны.
-    """
+    """Backfill windows that do not have computed deltas."""
     with psycopg.connect(**DB_CONFIG, row_factory=dict_row) as conn:
         with conn.cursor() as cur:
             last_end = get_last_processed_window_end(cur)

@@ -1,7 +1,9 @@
+"""Build SQL lexical features and update the DB table."""
+
 import hashlib
 import re
 from datetime import datetime, timezone
-from typing import Dict, Any, List, Tuple
+from typing import List
 
 import psycopg
 from psycopg.rows import dict_row
@@ -91,13 +93,10 @@ _re_token = re.compile(r"[a-z_]+|\d+|<=|>=|<>|!=|[()*,;=]")
 
 
 def normalize_sql(sql):
-    """
-    Упрощённая нормализация:
-    - убираем комментарии
-    - заменяем строковые/$$...$$ литералы на '?'
-    - заменяем числа на 0
-    - приводим к lower
-    - схлопываем пробелы
+    """Normalize SQL for stable comparison and tokenization.
+
+    Removes comments, replaces literals and numbers, lowercases, and
+    collapses whitespace.
     """
     s = sql
     s = _re_block_comment.sub(" ", s)
@@ -111,25 +110,29 @@ def normalize_sql(sql):
 
 
 def md5_text(s):
+    """Return MD5 hash of text as a hex string."""
     return hashlib.md5(s.encode("utf-8", errors="ignore")).hexdigest()
 
 
 def count_kw(norm, kw):
+    """Count keyword occurrences as standalone tokens."""
     return len(re.findall(rf"\b{re.escape(kw)}\b", norm))
 
 
 def has_any(norm: str, kws: List[str]) -> bool:
+    """Return True if any keyword is present."""
     return any(re.search(rf"\b{re.escape(k)}\b", norm) for k in kws)
 
 
 def count_subqueries(norm: str) -> int:
+    """Count subqueries matching the '( select' pattern."""
     return len(re.findall(r"\(\s*select\b", norm))
 
 
 def count_functions(norm):
-    """
-    Очень простая эвристика: считаем 'слово(' как функцию,
-    но исключаем ключевые слова SQL.
+    """Count function calls using a simple pattern.
+
+    Excludes SQL keywords to avoid inflating the count.
     """
     blacklist = {
         "select",
@@ -169,6 +172,7 @@ def count_functions(norm):
 
 
 def compute_lex_features(query_text):
+    """Compute lexical features for a query text."""
     norm = normalize_sql(query_text)
 
     tokens = _re_token.findall(norm)
@@ -212,17 +216,20 @@ def compute_lex_features(query_text):
 
 
 def load_existing_md5(cur):
+    """Load stored md5 values keyed by (dbid, userid, queryid)."""
     cur.execute(GET_EXISTING_MD5)
     rows = cur.fetchall()
     return {(r["dbid"], r["userid"], r["queryid"]): r["query_md5"] for r in rows}
 
 
 def load_candidates(cur):
+    """Load candidate queries from recent pgss snapshots."""
     cur.execute(GET_CANDIDATES)
     return cur.fetchall()
 
 
 def build_lex_features():
+    """Compute features and upsert monitoring.query_lex_features."""
     with psycopg.connect(**DB_CONFIG, row_factory=dict_row) as conn:
         with conn.cursor() as cur:
             existing = load_existing_md5(cur)

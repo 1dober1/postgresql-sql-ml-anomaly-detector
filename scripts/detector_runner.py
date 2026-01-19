@@ -1,3 +1,5 @@
+"""Detector run: load model, score, and send alerts."""
+
 import os
 import pickle
 from datetime import datetime, timezone
@@ -45,6 +47,7 @@ SIGNIF_WAL_BYTES = float(os.getenv("DRIFT_SIGNIF_WAL_BYTES", "200000"))
 
 
 def _score_threshold_from_env_or_model(model_threshold: float | None) -> float:
+    """Return alert threshold from env or model."""
     v = os.getenv("ALERT_SCORE_THRESHOLD")
     if v is None:
         return float(model_threshold or 0.0)
@@ -58,6 +61,7 @@ def _score_threshold_from_env_or_model(model_threshold: float | None) -> float:
 
 
 def _is_significant(metrics) -> bool:
+    """Check whether metrics exceed significance thresholds."""
     return (
         metrics.get("exec_time_per_call_ms", 0.0) >= SIGNIF_EXEC_MS
         or metrics.get("rows_per_call", 0.0) >= SIGNIF_ROWS
@@ -67,6 +71,7 @@ def _is_significant(metrics) -> bool:
 
 
 def load_model_or_train():
+    """Load the model or run emergency training."""
     if os.path.exists(MODEL_FILENAME):
         with open(MODEL_FILENAME, "rb") as f:
             return pickle.load(f)
@@ -84,6 +89,7 @@ def load_model_or_train():
 
 
 def run_once():
+    """Run one scoring cycle and persist alerts/state."""
     model_obj = load_model_or_train()
     model_threshold = None
     if isinstance(model_obj, dict) and "pipeline" in model_obj:

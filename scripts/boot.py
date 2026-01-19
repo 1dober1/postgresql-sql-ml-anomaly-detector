@@ -1,3 +1,5 @@
+"""Bootstrap and run the detector pipeline and database."""
+
 import time
 import os
 import sys
@@ -7,11 +9,11 @@ import psycopg
 try:
     from detector_alerts import send_telegram
 except Exception:
-    def send_telegram(_: str) -> None:  # type: ignore
+
+    def send_telegram(_: str) -> None:
         return
 
 
-# Настройка путей
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(BASE_DIR, ".."))
 sys.path.append(PROJECT_ROOT)
@@ -22,7 +24,6 @@ except Exception:
     print("❌ Не найден db_config.py / DB_CONFIG")
     sys.exit(1)
 
-# Пути к скриптам
 S_COLLECT = os.path.join(BASE_DIR, "collector.py")
 S_DELTAS = os.path.join(BASE_DIR, "build_deltas.py")
 S_FEATURES = os.path.join(BASE_DIR, "build_features.py")
@@ -30,7 +31,6 @@ S_LEX = os.path.join(BASE_DIR, "build_lex_features.py")
 S_TRAIN = os.path.join(BASE_DIR, "train_model.py")
 S_DETECT = os.path.join(BASE_DIR, "detect_anomalies.py")
 
-# Интервалы
 COLLECT_INTERVAL = int(os.getenv("COLLECT_INTERVAL", "15"))
 RETRAIN_INTERVAL = int(os.getenv("RETRAIN_INTERVAL", str(24 * 60 * 60)))
 
@@ -225,10 +225,9 @@ LEFT JOIN monitoring.query_lex_features l
 
 
 def wait_for_db(max_wait_sec: int = 120):
-    """Ждет пока Postgres поднимется"""
+    """Wait for PostgreSQL availability until the timeout."""
     print("⏳ Ожидание доступности PostgreSQL...")
     started = time.time()
-    retries = 30
     while True:
         try:
             with psycopg.connect(**DB_CONFIG) as conn:
@@ -244,6 +243,7 @@ def wait_for_db(max_wait_sec: int = 120):
 
 
 def init_db_structure():
+    """Create the monitoring schema and tables if missing."""
     print("🧱 Инициализация структуры monitoring...")
     with psycopg.connect(**DB_CONFIG) as conn:
         with conn.cursor() as cur:
@@ -253,10 +253,15 @@ def init_db_structure():
 
 
 def _run(script_path: str, check: bool = True):
+    """Run a Python script as a separate process."""
     subprocess.run([sys.executable, script_path], check=check)
 
 
 def run_pipeline_once():
+    """Run one pipeline pass.
+
+    Runs collection, deltas, features, lex, and detection.
+    """
     _run(S_COLLECT, check=True)
     _run(S_DELTAS, check=True)
     _run(S_FEATURES, check=True)
@@ -265,6 +270,7 @@ def run_pipeline_once():
 
 
 def run_training_cycle():
+    """Run bootstrap collection and model training with retries."""
     attempts = 0
     while True:
         attempts += 1
@@ -277,7 +283,7 @@ def run_training_cycle():
                 _run(S_DELTAS, check=True)
                 _run(S_FEATURES, check=True)
                 _run(S_LEX, check=True)
-                sys.stdout.write(f"\r   progress {i+1}/{TRAIN_COLLECT_ITERATIONS}\n")
+                sys.stdout.write(f"\r   progress {i + 1}/{TRAIN_COLLECT_ITERATIONS}\n")
                 sys.stdout.flush()
             except Exception as e:
                 print(f"\n❌ Ошибка bootstrap-итерации: {e}")
@@ -304,11 +310,14 @@ def run_training_cycle():
             continue
 
         print("✅ Модель обучена.")
-        send_telegram(f"✅ Модель обучена: {MODEL_FILE} ({MODEL_VERSION}). Запускаю детекцию…")
+        send_telegram(
+            f"✅ Модель обучена: {MODEL_FILE} ({MODEL_VERSION}). Запускаю детекцию…"
+        )
         return
 
 
 def main_loop():
+    """Run the detection loop and scheduled retraining."""
     print("🔁 Запуск основного цикла детекции...")
     send_telegram(f"🚀 Детектор запущен. Модель: {MODEL_FILE} ({MODEL_VERSION}).")
     last_retrain = time.time()
